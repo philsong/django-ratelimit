@@ -4,9 +4,10 @@ import time
 import zlib
 
 from django.conf import settings
+from django.core.cache import get_cache, caches
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.importlib import import_module
 
-from ratelimit.compat import import_module, get_cache
 from ratelimit import ALL, UNSAFE
 
 
@@ -27,7 +28,7 @@ def user_or_ip(request):
 
 
 _SIMPLE_KEYS = {
-    'ip': lambda r: r.META['REMOTE_ADDR'],
+    'ip': lambda r: r.META.get('X-Real-Ip', r.META.get('X-Forwarded-For', r.META['REMOTE_ADDR'])),
     'user': lambda r: str(r.user.pk),
     'user_or_ip': user_or_ip,
 }
@@ -126,11 +127,11 @@ def is_ratelimited(request, group=None, fn=None, key=None, rate=None,
     limit, period = _split_rate(rate)
 
     cache_name = getattr(settings, 'RATELIMIT_USE_CACHE', 'default')
-    # TODO: Django 1.7+
-    cache = get_cache(cache_name)
+
+    cache = caches[cache_name]
 
     if callable(key):
-        value = key(group, request)
+        value = key(request)
     elif key in _SIMPLE_KEYS:
         value = _SIMPLE_KEYS[key](request)
     elif ':' in key:
@@ -146,17 +147,17 @@ def is_ratelimited(request, group=None, fn=None, key=None, rate=None,
         raise ImproperlyConfigured(
             'Could not understand ratelimit key: %s' % key)
 
+    print value
     cache_key = _make_cache_key(group, rate, value, method)
-    initial_value = 1 if increment else 0
-    added = cache.add(cache_key, initial_value)
-    if added:
-        count = initial_value
+
+    cache.add(cache_key, 0)
+    print cache_key,increment
+    if increment:
+        count = cache.incr(cache_key)
     else:
-        if increment:
-            count = cache.incr(cache_key)
-        else:
-            count = cache.get(cache_key)
+        count = cache.get(cache_key)
     limited = count > limit
+    print cache_key,increment,count,limit, limited,old_limited
     if increment:
         request.limited = old_limited or limited
     return limited
